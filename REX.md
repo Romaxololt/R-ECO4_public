@@ -1,703 +1,720 @@
-# REX — Documentation complète
+# Documentation du compilateur REX
 
-> Compilateur pour le langage **REX** (syntaxe inspirée de Python) qui se résout vers **REX-SL** (lui-même compilé vers C puis vers un exécutable).
->
-> ```
-> REX (.rex) --[REX.py]--> REX-SL (.rexsl) --[REX-SL.py]--> C (.c) --> exécutable
-> ```
->
-> - Version alpha du compilateur : `0.1.0`
-> - Version REX-SL ciblée : `4.0.0` (générateur `REX-SL.py`, ligne de commande compatible avec `-f/--file`)
-> - Compatible avec REX-SL `0.0.21`
-> - Copyright (c) 2026 R-ECO4
+> Version alpha 0.1.3 — copyright © 2026 R-ECO4  
+> Cible REX-SL : 0.0.23
 
 ---
 
 ## Sommaire
 
-1. [Installation / utilisation en ligne de commande](#installation--utilisation-en-ligne-de-commande)
-2. [Structure d'un fichier REX](#structure-dun-fichier-rex)
-3. [Types](#types)
-4. [Déclaration de variables (`var`)](#déclaration-de-variables-var)
-5. [`None` / `none` / `null`](#none--none--null)
-6. [Expressions](#expressions)
-7. [Collections (list, tuple, set, dict)](#collections-list-tuple-set-dict)
-8. [Indexation et slices à la Python](#indexation-et-slices-à-la-python)
-9. [Fonctions](#fonctions)
-10. [`func` comme objet (pointeurs de fonction)](#func-comme-objet-pointeurs-de-fonction)
-11. [Fonctions natives (builtins)](#fonctions-natives-builtins)
-12. [Affichage (`show`)](#affichage-show)
-13. [Fichiers (lecture / écriture)](#fichiers-lecture--écriture)
-14. [Conditions (`if` / `elif` / `else`)](#conditions-if--elif--else)
-15. [Boucles (`repeat`, `while`, `for`)](#boucles-repeat-while-for)
-16. [`break` / `continue`](#break--continue)
-17. [Sauts explicites (`label` / `go`)](#sauts-explicites-label--go)
-18. [Déballage de tuple](#déballage-de-tuple)
-19. [List comprehensions](#list-comprehensions)
-20. [Chaînes formatées (f-strings)](#chaînes-formatées-f-strings)
-21. [Imports (`import`)](#imports-import)
-22. [Modules avec espace de noms (`import ... as`)](#modules-avec-espace-de-noms-import--as)
-23. [Retypage dynamique des variables](#retypage-dynamique-des-variables)
-24. [Erreurs](#erreurs)
-25. [Limitations connues (héritées de REX-SL)](#limitations-connues-héritées-de-rex-sl)
-26. [Architecture interne du compilateur](#architecture-interne-du-compilateur)
-27. [Historique des versions](#historique-des-versions)
+1. [Vue d'ensemble](#1-vue-densemble)
+2. [Pipeline de compilation](#2-pipeline-de-compilation)
+3. [Utilisation en ligne de commande](#3-utilisation-en-ligne-de-commande)
+4. [Syntaxe du langage REX](#4-syntaxe-du-langage-rex)
+   - 4.1 [En-tête de fichier](#41-en-tête-de-fichier)
+   - 4.2 [Types](#42-types)
+   - 4.3 [Variables (`var`)](#43-variables-var)
+   - 4.4 [Expressions et opérateurs](#44-expressions-et-opérateurs)
+   - 4.5 [Affichage (`show`)](#45-affichage-show)
+   - 4.6 [Conditions (`if` / `elif` / `else`)](#46-conditions-if--elif--else)
+   - 4.7 [Boucles](#47-boucles)
+   - 4.8 [Fonctions (`func`)](#48-fonctions-func)
+   - 4.9 [Imports](#49-imports)
+   - 4.10 [Fichiers I/O](#410-fichiers-io)
+   - 4.11 [F-strings](#411-f-strings)
+   - 4.12 [Sauts explicites (`go` / `label`)](#412-sauts-explicites-go--label)
+   - 4.13 [None](#413-none)
+   - 4.14 [Collections](#414-collections)
+   - 4.15 [Fonctions natives (builtins)](#415-fonctions-natives-builtins)
+   - 4.16 [Fonctions comme objets (funcref)](#416-fonctions-comme-objets-funcref)
+5. [Architecture interne](#5-architecture-interne)
+   - 5.1 [REX_Lexer](#51-rex_lexer)
+   - 5.2 [ExprParser](#52-exprparser)
+   - 5.3 [ExprCodegen](#53-exprcodegen)
+   - 5.4 [Emitter](#54-emitter)
+   - 5.5 [Instructions (statements)](#55-instructions-statements)
+   - 5.6 [Préprocesseur d'imports](#56-préprocesseur-dimports)
+6. [Gestion des erreurs](#6-gestion-des-erreurs)
+7. [Limitations connues](#7-limitations-connues)
+8. [Historique des versions](#8-historique-des-versions)
 
 ---
 
-## Installation / utilisation en ligne de commande
+## 1. Vue d'ensemble
+
+**REX** est un langage de programmation à syntaxe inspirée de Python (indentation obligatoire, blocs terminés par `:`) qui se compile en **REX-SL**, lui-même compilé en **C** par `REX-SL.py` avant d'être transformé en exécutable natif via `gcc`.
+
+REX n'est pas interprété : chaque construction du langage est traduite statiquement en opcodes REX-SL équivalents lors de la compilation.
 
 ```
-python REX.py -f script.rex -c -k -s -r
+fichier.rex  ──[REX.py]──▶  fichier.rexsl  ──[REX-SL.py]──▶  fichier.c  ──[gcc]──▶  exécutable
+```
+
+Le compilateur `REX.py` est entièrement écrit en Python et ne dépend d'aucune bibliothèque externe.
+
+---
+
+## 2. Pipeline de compilation
+
+| Étape | Outil | Entrée | Sortie |
+|-------|-------|--------|--------|
+| 1 — Prétraitement | `preprocess_imports()` | Source `.rex` brut | Source avec imports inlinés |
+| 2 — Analyse lexicale | `REX_Lexer` | Source REX | Liste de tokens / groupes |
+| 3 — Résolution REX→REX-SL | `resolve_to_rexsl()` | Tokens | Code REX-SL (texte) |
+| 4 — Compilation REX-SL→C→exe | `REX-SL` (exécutable externe) | Fichier `.rexsl` | Exécutable natif |
+
+Les étapes 1 à 3 sont entièrement gérées par `REX.py`. L'étape 4 est déléguée à l'exécutable `REX-SL` (ou `REX-SL.exe` sur Windows) qui doit être présent dans le même dossier que `REX.py`.
+
+---
+
+## 3. Utilisation en ligne de commande
+
+```bash
+# Compiler un fichier source
+python REX.py -f script.rex -c
+
+# Compiler et exécuter
+python REX.py -f script.rex -r
+
+# Passer du code directement (mode one-liner)
 python REX.py -o "var x = 5; show(x)" -c -r
+
+# Conserver les fichiers intermédiaires
+python REX.py -f script.rex -c -k -s
+
+# Mode inspection : génère uniquement le .rexsl (sans compiler)
+python REX.py -f script.rex
 ```
 
-| Option              | Effet                                                                          |
-|---------------------|---------------------------------------------------------------------------------|
-| `-f`, `--file`      | fichier `.rex` source (doit commencer par le header `# REX>`)                  |
-| `-o`, `--oneline`   | code REX passé directement en ligne de commande, instructions séparées par `;` |
-| `-O`, `--output`    | nom de base du `.rexsl` / `.c` / exécutable généré (défaut : nom du fichier source, ou `rex_output` en mode `-o`) |
-| `-c`, `--compiler`  | compile REX → REX-SL → C → exécutable                                          |
-| `-r`, `--run`       | exécute l'exécutable généré (implique `-c`)                                    |
-| `-k`, `--keep-c`    | conserve le `.c` intermédiaire au lieu de le supprimer                         |
-| `-s`, `--keep-rsl`  | conserve le `.rexsl` intermédiaire au lieu de le supprimer                     |
-| `-d`, `--debug`     | affiche les étapes internes (tokens, code REX-SL généré, ...)                  |
+### Options
 
-Sans `-c` ni `-r`, seul le `.rexsl` est généré/affiché (mode inspection).
+| Option | Forme longue | Description |
+|--------|-------------|-------------|
+| `-f FILE` | `--file` | Fichier `.rex` source (doit commencer par `# REX>`) |
+| `-o CODE` | `--oneline` | Code REX passé directement, instructions séparées par `;` |
+| `-O NOM` | `--output` | Nom de base des fichiers générés (défaut : nom du fichier source sans extension, ou `rex_output` en mode `-o`) |
+| `-c` | `--compiler` | Compile REX → REX-SL → C → exécutable |
+| `-r` | `--run` | Exécute l'exécutable après compilation (implique `-c`) |
+| `-k` | `--keep-c` | Conserve le fichier `.c` intermédiaire |
+| `-s` | `--keep-rsl` | Conserve le fichier `.rexsl` intermédiaire |
+| `-d` | `--debug` | Affiche les étapes internes (tokens, code REX-SL généré, etc.) |
 
-`-o`/`--oneline` et `-f`/`--file` sont mutuellement exclusifs, et un des deux est obligatoire.
-
-L'exécutable `REX-SL` (ou `REX-SL.exe` sous Windows) doit se trouver à côté du script/exécutable `REX` pour que `-c`/`-r` fonctionnent (il assure l'étape REX-SL → C → binaire).
+Sans `-c` ni `-r`, seul le fichier `.rexsl` est généré (mode inspection).
 
 ---
 
-## Structure d'un fichier REX
+## 4. Syntaxe du langage REX
 
-Un fichier `.rex` utilisé en mode `-f` doit commencer par un en-tête sur la première ligne non vide :
+### 4.1 En-tête de fichier
+
+Tout fichier `.rex` doit commencer par la ligne suivante (première ligne non vide) :
 
 ```
 # REX>
 ```
 
-(le format historique avec numéro de version, ex. `# REX> 0.0.5`, n'est plus requis depuis la 0.0.6 — seule la forme sans numéro `# REX>` est reconnue).
+Cette ligne est vérifiée avant toute analyse. En mode `-o`/`--oneline`, elle n'est pas requise.
 
-Le reste du fichier suit une syntaxe à la Python :
+Les commentaires sont identiques à Python :
 
-- indentation par espaces ou tabulations (1 tabulation = 4 espaces) pour délimiter les blocs (`if`, `while`, `for`, `func`, `repeat`, ...) — plus d'accolades `{}` pour les blocs de code ;
-- `;` optionnel pour séparer plusieurs instructions sur une même ligne logique ;
-- commentaires ligne `# ...` et commentaires bloc `#* ... *#` ;
-- les sauts de ligne à l'intérieur de `(...)`/`[...]` sont ignorés (continuation implicite, comme en Python).
+```python
+# commentaire de ligne
 
-En mode `-o`/`--oneline`, aucun header ni indentation n'est nécessaire : tout tient sur une seule ligne, les instructions étant séparées par `;`.
-
----
-
-## Types
-
-```
-number   float   bool   str   list   dict   set   tuple   func
-```
-
-`tuple` et `set` n'existent pas nativement en REX-SL : ils sont représentés en interne comme une `list` REX-SL. Le `set` est dédupliqué **à la compilation** pour ses éléments littéraux.
-
-`func` est un pseudo-type utilisé uniquement pour déclarer une variable *pointeur de fonction* (`var func f = maFonction;`, voir plus bas) — en interne le compilateur le trace sous le nom `funcref`.
-
----
-
-## Déclaration de variables (`var`)
-
-```
-var x                    # number, valeur par défaut 0
-var x = 5                # type inféré
-var x = (2 + 3) * 4      # expression complète (calcul, appel de fonction, ...)
-var number x = 5         # type explicite
-var list l = [1, 2, 3]   # collection, type explicite
-var l = [1, 2, 3]        # collection, type inféré depuis le littéral
-```
-
-- Sans valeur : type par défaut `number`, valeur `0` (sauf si un type explicite est donné : valeur par défaut du type — `0.0` pour `float`, `false` pour `bool`, `""` pour `str`, collection vide pour `list`/`dict`/`set`/`tuple`).
-- Avec valeur : le type est soit inféré depuis l'expression, soit vérifié contre le type explicite annoté (avec promotion `number` → `float` acceptée).
-
-### Type explicite vs type inféré
-
-- **Type explicite** (`var number x = 5`, `var list l = [...]`) : le type est **verrouillé**. Toute tentative ultérieure de changement de type sur cette variable lève une erreur de compilation.
-- **Type inféré** (`var x = 5`, `var s = carre(i)`) : le type peut être **changé dynamiquement** par une réaffectation ultérieure (voir [Retypage dynamique](#retypage-dynamique-des-variables)).
-
----
-
-## `None` / `none` / `null`
-
-Depuis la 0.1.0, REX simule `None` à la Python (`None`, `none` et `null` sont strictement équivalents), bien que REX-SL n'ait aucun type nullable natif. Le mécanisme repose sur une valeur concrète + un **drapeau booléen caché** par variable.
-
-```
-var x = None              # x est "number" par défaut, marqué None
-var list l = None         # collection marquée None
-x = None                  # réassignation à None (efface le contenu selon le type)
-if x is None:
-    show("x est vide")
-if x is not None:
-    show("x a une valeur")
-```
-
-Comportements notables :
-
-- `var <type> x = None;` est autorisé et déclare `x` avec la valeur par défaut du type, plus un drapeau interne marqué "None".
-- `x = None;` (réaffectation) marque le drapeau sans changer le type.
-- `x is None` / `x is not None` (ou `x == None` / `x != None`) sont reconnus dans les conditions (`if`/`while`/...).
-- `show(x)` sur une variable actuellement `None` affiche `"None"`.
-- `return None;` n'est **pas** supporté explicitement (une fonction sans aucun `return` textuel se comporte déjà comme si elle retournait `None` lorsqu'elle est appelée dans une expression).
-- `None` n'est **pas** utilisable comme argument de fonction.
-- `var func f = None;` (typage `func`) est refusé.
-
----
-
-## Expressions
-
-Opérateurs `+ - * / % **`, parenthèses, moins unaire, priorité standard :
-
-```
-niveau 0 (le + faible) : + -
-niveau 1               : * / %
-niveau 2 (le + fort)   : ** (exposant, associatif à droite)
-```
-
-Promotion automatique `number → float` dès qu'un `float` intervient dans une opération arithmétique.
-
-`str` n'est valide qu'avec :
-- `+` (concaténation `str + str`)
-- `-` (suppression d'occurrences `str - str`)
-- `*` (répétition `str * number`)
-
-Exemples :
-```
-var x = (2 + 3) * 4        # 20
-var y = 2 ** 10             # 1024
-var z = 2 ** -1              # 0.5 (float)
-var s = "ab" * 3             # "ababab"
+#* commentaire
+   de bloc *#
 ```
 
 ---
 
-## Collections (list, tuple, set, dict)
+### 4.2 Types
 
-Littéraux de collection, syntaxe Python, utilisables comme valeur d'un `var` ou d'une réaffectation :
+| Type REX | Description | Représentation REX-SL |
+|----------|-------------|----------------------|
+| `number` | Entier | `long long` C |
+| `float` | Flottant | `double` C |
+| `bool` | Booléen (`true`/`false`) | `bool` C |
+| `str` | Chaîne de caractères | `char*` C (heap) |
+| `list` | Liste ordonnée | Structure liste REX-SL |
+| `dict` | Dictionnaire clé→valeur | Structure dict REX-SL |
+| `set` | Ensemble (dédupliqué à la compilation) | `list` REX-SL |
+| `tuple` | N-uplet immuable | `list` REX-SL |
+| `none` | Valeur nulle | `void*` C = NULL |
 
-```
-[1, 2, 3]                # list
-(1, 2, 3)   ()   (x,)    # tuple (y compris tuple vide et singleton)
-{1, 2, 3}                # set (dédupliqué à la compilation pour les éléments littéraux)
-{"cle": 1, "autre": 2}   # dict (clés obligatoirement des chaînes littérales)
-```
+`set` et `tuple` n'ont pas de type dédié en REX-SL : ils sont tous deux représentés comme des `list`. Les éléments d'un `set` littéral sont dédupliqués **à la compilation**.
 
-Restrictions :
-- éléments de `list`/`tuple`/`set` : `number`/`float`/`str`/`bool` uniquement (limitation REX-SL : `append` n'accepte que ces types) ;
-- clés de `dict` : toujours des chaînes **littérales** ;
-- valeurs de `dict` : `number`/`float`/`str`/`bool` uniquement.
-
-### Ajout d'éléments (`append`)
-
-```
-var l = [1, 2, 3]
-append(l, 4)
-```
-
-`append(liste, valeur)` est une instruction autonome (pas utilisable dans une expression) qui délègue à l'opcode REX-SL `append`. Le type de la valeur doit rester cohérent avec le type d'élément déjà déterminé pour la liste (liste "homogène").
-
-### Affichage d'une collection
-
-`show(...)` sur une collection dont **tous les éléments sont des littéraux connus à la compilation** affiche sa représentation figée (capturée au moment de la déclaration). Une collection modifiée ensuite au runtime (via `append`, indexation, boucle, retour de fonction...) est sérialisée dynamiquement via les opcodes REX-SL `list_str`/`dict_str`.
+La promotion automatique `number → float` s'applique dès qu'un `float` intervient dans une expression arithmétique.
 
 ---
 
-## Indexation et slices à la Python
+### 4.3 Variables (`var`)
 
-### Indexation générique `x[clé]`
-
-```
-var l = [10, 20, 30]
-show(l[1])                 # 20
-
-var d = {"a": 1, "b": 2}
-show(d["a"])                # 1
-
-var s = "bonjour"
-show(s[0])                  # "b"
-```
-
-- `l[i]` (list/tuple/set) : l'index doit être `number`, le type d'élément doit être connu et homogène à la compilation.
-- `d["cle"]` (dict) : la clé doit être `str`, le type de valeur doit être connu et homogène.
-- `s[i]` (str) : sucre syntaxique pour `charat(s, i)`.
-
-### Affectation indexée `x[clé] = valeur;`
-
-```
-l[0] = 99;
-d["a"] = 42;
+```python
+var x                       # number, valeur par défaut 0
+var x = 5                   # type inféré depuis la valeur
+var x = (2 + 3) * 4         # expression complète
+var number x = 5            # type explicite (verrouillé)
+var float pi = 3.14
+var str nom = "Alice"
+var bool actif = true
+var list l = [1, 2, 3]
+var none ptr               # pointeur void* initialisé à NULL
+var x = None               # équivalent à var none x
 ```
 
-- Sur `dict` : délègue à l'opcode REX-SL `set`.
-- Sur `list`/`tuple`/`set` : REX-SL n'a pas d'opcode dédié — l'écriture se fait via injection C directe (`scrc`), avec vérification de dépassement d'index à l'exécution.
+#### Réaffectation
 
-### Slice `x[début:fin]` (str uniquement)
-
-```
-var s = "bonjour"
-show(s[:3])       # "bon"
-show(s[3:])       # "jour"
-show(s[:])        # copie complète
-show(s[1:][0:2])  # chaînable
+```python
+x = nouvelle_valeur         # réaffecte une variable existante
+x += 5                      # opérateurs composés : += -= *= /= %=
 ```
 
-### Slice avec pas `x[début:fin:pas]` (str uniquement)
+#### Retypage par réaffectation
 
-```
-show(s[::-1])     # inversion complète
-show(s[::2])      # un caractère sur deux
-show(s[1:5:2])
+Une variable dont le type a été **inféré** (non annoté explicitement) peut changer de type par réaffectation. Le compilateur émet l'opcode REX-SL `retype <var> <type>;` pour gérer la transition.
+
+```python
+var s = calcul(i)           # type inféré : number
+s = {1, 2, 3}              # OK : retype s en set
+s = "texte"                 # OK : retype s en str
 ```
 
-Le pas doit être un **entier littéral** connu à la compilation (positif ou négatif, jamais nul).
+Un type **explicite** (`var number x = 5`) reste verrouillé et tout changement lève une erreur de compilation.
+
+> **Note :** les noms commençant par `__rx_` sont réservés au compilateur.
+
+#### Déballage de tuple
+
+```python
+a, b = e1, e2              # N expressions scalaires
+a, b = b, a                # swap (sémantique Python : droites évaluées avant affectation)
+```
 
 ---
 
-## Fonctions
+### 4.4 Expressions et opérateurs
 
+| Opérateur | Description |
+|-----------|-------------|
+| `+ - * / %` | Arithmétique standard |
+| `**` | Exponentiation (priorité maximale, associatif à droite) |
+| `()` | Groupement / priorité |
+| `-x` | Moins unaire |
+| `str + str` | Concaténation |
+| `str - str` | Suppression d'occurrences |
+| `str * number` | Répétition |
+| `x[a:b]` | Slice sur `str` (bornes optionnelles) |
+| `x[a:b:c]` | Slice avec pas sur `str` |
+| `x[i]` | Indexation via `charat(x, i)` ou `get` |
+| `alias.fn(args)` | Appel qualifié de module |
+
+---
+
+### 4.5 Affichage (`show`)
+
+`show` se comporte exactement comme `print()` en Python :
+
+```python
+show(x)                         # affiche x suivi d'un retour à la ligne
+show(a, b, c)                   # "a b c" (séparateur " " par défaut)
+show(a, b, sep=", ")            # "a, b"
+show(x, end="")                 # sans retour à la ligne
+show(a, b, sep="-", end="!")    # combiné
 ```
-func nom(type arg1, type arg2, ...):
+
+Chaque valeur doit être de type `number`, `float`, `str` ou `bool`. Les valeurs non-`str` sont automatiquement converties en texte. `print()` est un alias de `show()`.
+
+---
+
+### 4.6 Conditions (`if` / `elif` / `else`)
+
+```python
+if condition:
     ...
-    return expr
-```
-
-Compile vers de vraies fonctions REX-SL (`func` / `endfunc`), avec support de la **récursion**.
-
-Types de paramètres acceptés : `number`, `float`, `bool`, `str`, `list`, `dict` (les collections sont passées par pointeur, sans copie).
-
-### Valeurs par défaut et type de retour explicite
-
-```
-func add(number a, number b = 10) -> number:
-    return a + b
-```
-
-- `b = 10` : valeur par défaut (doit être un littéral).
-- `-> number` : type de retour explicite, utile notamment pour qu'un appel **récursif utilisé dans une expression** (`return n * f(n-1)`) fonctionne dès le premier passage.
-
-### Arguments nommés
-
-```
-func f(number a, number y = 5):
-    return a + y
-
-show(f(1, y=10))
-```
-
-### `*args` / `**kwargs`
-
-Les paramètres `*args` (représenté en interne comme `list`) et `**kwargs` (représenté comme `dict`) sont reconnus dans la signature d'une fonction.
-
-### Annotation d'élément pour un paramètre `list`
-
-```
-func total(list[number] valeurs) -> number:
-    ...
-```
-
-`list[number]`, `list[float]`, `list[str]`, `list[bool]` permettent d'annoter le type d'élément d'un paramètre `list`, indispensable pour indexer ou itérer sur ce paramètre dans le corps de la fonction.
-
-### `return`
-
-- Valide uniquement à l'intérieur d'un `func`.
-- Tous les `return` d'une même fonction doivent partager le même type.
-- Une fonction sans aucun `return` se comporte comme si elle retournait `None` (à la Python) lorsqu'elle est appelée dans une expression.
-- `list`/`dict` en retour sont supportés (le pointeur est transféré, sans copie profonde).
-
-### Limitation : `RX_ret`
-
-REX-SL utilise un registre global unique `RX_ret`, **monotype pour toute la durée du programme**. Le compilateur REX contourne automatiquement les conflits de type (deux fonctions à types de retour différents appelées dans le même programme) en basculant sur une injection C directe (`scrc`) pour les appels en conflit — transparent pour l'utilisateur.
-
----
-
-## `func` comme objet (pointeurs de fonction)
-
-```
-func carre(number x) -> number:
-    return x * x
-
-var func f = carre;
-show(f(5));          # 25
-
-f = autreFonction;   # réassignation
-```
-
-- `var func <nom> = <fonction>;` déclare une variable de type interne `funcref` (aucun `var` REX-SL émis : le pointeur C est injecté via `scrc`).
-- `<nom>(args)` dans une expression est compilé en appel indirect via ce pointeur.
-- `<nom> = <autreFonction>;` (réassignation) est supporté.
-
-**Limitations** : aucune closure ; la signature de la cible n'est vérifiée qu'à la déclaration (pas à la réassignation) ; la valeur `None` n'est pas acceptée.
-
----
-
-## Fonctions natives (builtins)
-
-Utilisables dans n'importe quelle expression, **prioritaires** sur les fonctions `func` utilisateur de même nom (comme les builtins Python) :
-
-| Fonction              | Arité | Description                                              |
-|------------------------|-------|------------------------------------------------------------|
-| `len(s)`               | 1     | longueur — `str` ou collection (list/tuple/set/dict)       |
-| `type(x)`               | 1     | nom du type (str)                                          |
-| `str(x)`                | 1     | conversion en texte                                         |
-| `int(x)`                | 1     | conversion en `number`                                      |
-| `float(x)`              | 1     | conversion en `float`                                       |
-| `upper(s)`              | 1     | majuscules                                                   |
-| `lower(s)`              | 1     | minuscules                                                    |
-| `trim(s)`               | 1     | supprime les espaces en bordure                              |
-| `reverse(s)`            | 1     | inverse la chaîne                                            |
-| `charat(s, i)`          | 2     | caractère à l'index `i`                                       |
-| `find(s, sous)`         | 2     | position d'une sous-chaîne                                    |
-| `slice(s, a, b)`        | 3     | sous-chaîne `[a:b]`                                            |
-| `replace(s, old, new)`  | 3     | remplacement de sous-chaîne                                    |
-
-Ces fonctions déléguent toutes à un opcode REX-SL du même nom (aucune modification de `REX-SL.py`). Les arguments nommés ne sont **pas** supportés pour les builtins.
-
----
-
-## Affichage (`show`)
-
-`show(...)` se comporte **exactement** comme `print()` en Python :
-
-```
-show(x)                       # affiche x, retour à la ligne (end="\n" par défaut)
-show(a, b, c)                  # affiche "a b c" (valeurs séparées par sep=" " par défaut)
-show(a, b, sep=", ")           # séparateur personnalisé : "a, b"
-show(x, "")                    # forme positionnelle historique, équivalente à end=""
-show(x, end="")                # pas de retour à la ligne
-show(x, end="...")             # tout autre 'end'
-show(a, b, sep="-", end="!")   # combinable, comme print()
-```
-
-- Nombre quelconque de valeurs positionnelles, concaténées avec `sep` entre chacune.
-- Chaque valeur non-`str` est automatiquement convertie en texte.
-- Types affichables : `number`/`float`/`str`/`bool`, plus les collections **entièrement littérales** (voir [Collections](#collections-list-tuple-set-dict)).
-- En interne, tout est concaténé en une seule chaîne puis émis via un unique `show`/`showln` REX-SL final (limitation REX-SL : ces opcodes n'acceptent qu'une seule valeur à la fois).
-
----
-
-## Fichiers (lecture / écriture)
-
-Gestion de fichier à la Python (délègue directement aux opcodes REX-SL `read`/`readlines`/`write`/`writelines`) :
-
-```
-var contenu = read("data.txt")          # lit tout le fichier dans un str
-var lignes = readlines("data.txt")      # lit le fichier, une entrée par ligne (list)
-write("out.txt", contenu)                # écrit une valeur (mode "w", écrase)
-writelines("out.txt", lignes)            # écrit une liste, un élément par ligne
-```
-
-Limitations (héritées de REX-SL) :
-- lecture/écriture **complète** en un seul appel — pas d'objet "fichier" ouvert/fermé explicitement ;
-- pas de mode append ;
-- `read`/`readlines` s'utilisent uniquement comme valeur d'un `var` ;
-- `write`/`writelines` sont des instructions (pas utilisables dans une expression) ;
-- `writelines` attend le nom d'une variable liste déjà déclarée (pas un littéral inline).
-
----
-
-## Conditions (`if` / `elif` / `else`)
-
-```
-if cond:
-    ...
-elif autre_cond:
+elif autre_condition:
     ...
 else:
     ...
 ```
 
-`cond` supporte :
-- les comparateurs `== != < <= > >=` ;
-- `and`, `or`, `not`, avec court-circuit logique correct (compilés en séquences `cdn`/`go` REX-SL) ;
-- le groupement par parenthèses : `(a > b) and (c < d)` ;
-- `in` / `not in` (appartenance à une `str` ou une collection) ;
-- `is None` / `is not None` (voir [None](#none--none--null)) ;
-- une simple expression `bool` : `if flag:`.
+Les conditions supportent `and`, `or`, `not` et les parenthèses de groupement, compilés en séquences `cdn`/`go` REX-SL avec court-circuit logique.
 
-Une seule comparaison à la fois par atome (pas de chaînage à la `a < b < c`).
+```python
+if (a > b) and (c < d):
+    ...
+
+if not x == 0 or y > 10:
+    ...
+
+if x is None:
+    ...
+
+if x == None:               # équivalent à is None
+    ...
+```
+
+Opérateurs de comparaison supportés : `==`, `!=`, `<`, `>`, `<=`, `>=`, `is None`, `in`, `not in`.
 
 ---
 
-## Boucles (`repeat`, `while`, `for`)
+### 4.7 Boucles
 
-### `repeat`
+#### `repeat`
 
-```
+```python
 repeat 3:
     ...
 
-repeat 3 times:    # forme historique, "times" optionnel
+repeat n times:             # le mot-clé "times" est optionnel
     ...
 ```
 
-Boucle exécutée `<expr>` fois **au runtime** (jamais déroulée à la compilation).
+Boucle exécutée `<expr>` fois au **runtime** (jamais déroulée à la compilation), via un compteur interne + `lbl`/`cdn`/`go` REX-SL.
 
-### `while`
+#### `while`
 
-```
-while <cond>:
+```python
+while condition:
     ...
 ```
 
-`<cond>` supporte exactement la même syntaxe que la condition d'un `if`.
+La condition supporte la même syntaxe que `if` (`and`/`or`/`not`, parenthèses).
 
-### `for` — plage numérique (`range`)
+#### `for` — range
 
-```
-for i in range(5):            # 0, 1, 2, 3, 4
+```python
+for i in range(5):              # 0, 1, 2, 3, 4
     ...
-for i in range(2, 8):         # 2, 3, ..., 7
+for i in range(2, 8):           # 2, 3, ..., 7
     ...
-for i in range(10, 0, -2):    # 10, 8, 6, 4, 2
+for i in range(10, 0, -2):      # 10, 8, 6, 4, 2  (le pas doit être un entier littéral)
     ...
 ```
 
-`range()` accepte 1 à 3 arguments (`stop` / `start, stop` / `start, stop, step`). Le `step`, s'il est fourni, doit être un entier **littéral** connu à la compilation.
+#### `for` — itération sur une chaîne
 
-### `for` — caractère par caractère
-
-```
-for c in "bonjour":     # boucle runtime, jamais déroulée
-    show(c)
+```python
+for c in ma_chaine:             # itère caractère par caractère au runtime
+    ...
 ```
 
-### `for` — sur un littéral de collection (déroulé à la compilation)
+#### `for` — itération sur un littéral de collection
 
-```
-for x in [1, 2, 3]:
-    show(x)
-```
+```python
+for x in [1, 2, 3]:            # déroulé à la compilation
+    ...
 
-Le corps est dupliqué à la compilation, une fois par élément du littéral.
-
-### `for` — sur une variable list/tuple/set (boucle runtime)
-
-```
-var l = [10, 20, 30]
-for x in l:
-    show(x)
+for i, v in enumerate([10, 20, 30]):  # deux variables (index, valeur)
+    ...
 ```
 
-Boucle runtime via les opcodes `len`/`get` — nécessite que la liste soit homogène et son type d'élément connu.
+L'itération directe sur une **variable** de type `list` n'est pas supportée (REX-SL n'expose pas de primitive de longueur de liste variable).
 
-### `for ... enumerate(...)`
+#### `break` et `continue`
 
+Supportés dans `while`, `for` et `repeat`. Sautent respectivement vers la fin ou vers l'incrément/réévaluation de la boucle la plus proche.
+
+#### List comprehensions
+
+```python
+var carres = [x * x for x in range(10)]
+var pairs  = [x for x in range(20) if x % 2 == 0]
 ```
-for i, v in enumerate([10, 20, 30]):
-    show(i, v)
 
-for i, c in enumerate("abc"):
-    show(i, c)
-```
-
-Uniquement cette forme à deux variables — pas de déballage de tuple général dans un `for`.
+Compilées en variable `list` + boucle + `append`.
 
 ---
 
-## `break` / `continue`
+### 4.8 Fonctions (`func`)
 
-Gérés dans `while`, `for` et `repeat` (pile d'étiquettes par boucle, une entrée par niveau imbriqué) :
-
-```
-while true:
-    if x == 0:
-        break
-    if x < 0:
-        continue
+```python
+func nom(number a, str b, float c):
     ...
+    return expr
+
+func calcul(number x) -> number:   # type de retour explicite (optionnel)
+    return x * 2
+
+func afficher(str msg) -> none:    # fonction void (pas de valeur de retour)
+    show(msg)
 ```
 
-- `break;` : sort entièrement de la boucle la plus proche.
-- `continue;` : passe directement à l'itération suivante (réévaluation de la condition pour `while`, incrément puis réévaluation pour `for`/`repeat`).
+Types de paramètres acceptés : `number`, `float`, `bool`, `str`. Les collections (`list`, `dict`) ne peuvent pas être passées en paramètre directement (limitation REX-SL).
+
+`return` n'est valide qu'à l'intérieur d'un `func`. Tous les `return` d'une même fonction doivent partager le même type.
 
 ---
 
-## Sauts explicites (`label` / `go`)
+### 4.9 Imports
 
+#### Import textuel (inline)
+
+```python
+import "utils.rex";
 ```
+
+Le contenu du fichier est **collé textuellement** à la place de la ligne `import`, avant toute analyse lexicale (comme `#include` en C). L'en-tête `# REX>` du fichier importé est automatiquement retirée. Récursif, avec détection des imports circulaires.
+
+Disponible uniquement en mode `-f`/`--file` (pas en mode `-o`).
+
+#### Import avec espace de noms
+
+```python
+import "math.rex" as math;
+
+var r = math.carre(5)       # appel qualifié
+```
+
+Les fonctions du fichier importé sont renommées `__rx_mod_<alias>_<fn>` dans le code inline. Seules les fonctions sont exportées (pas les variables globales du module).
+
+#### Import sans guillemets (à la Python)
+
+```python
+import module
+import module as alias
+```
+
+Cherche `module.rex` ou l'exécutable `module` dans le chemin courant.
+
+---
+
+### 4.10 Fichiers I/O
+
+```python
+var contenu  = read("data.txt")         # lit tout le fichier dans un str
+var lignes   = readlines("data.txt")    # lit le fichier ligne par ligne (list)
+
+write("out.txt", contenu)               # écrit une valeur (écrase le fichier)
+writelines("out.txt", lignes)           # écrit une liste, un élément par ligne
+```
+
+Délégué directement aux opcodes REX-SL `read`/`readlines`/`write`/`writelines`. Pas d'objet "fichier" ouvert/fermé, pas de mode append (limitation REX-SL).
+
+---
+
+### 4.11 F-strings
+
+```python
+var nom = "Ada"
+var age = 36
+show(f"{nom} a {age} ans")          # "Ada a 36 ans"
+show(f"accolade : {{{age}}}")       # "accolade : {36}"
+```
+
+Disponibles partout où une chaîne est attendue. Chaque `{expr}` est converti en texte et concaténé. `{{` / `}}` produisent une accolade littérale.
+
+#### Spécificateurs de format
+
+```python
+show(f"{pi:.2f}")       # flottant avec 2 décimales
+show(f"{n:05d}")        # entier sur 5 chiffres, complété de zéros
+show(f"{s:>10s}")       # chaîne alignée à droite sur 10 caractères
+```
+
+Formes supportées : `[<|>][0][largeur][.précision][d|f|g|e|s]`.
+
+---
+
+### 4.12 Sauts explicites (`go` / `label`)
+
+```python
 label debut;
 ...
 go debut;
 ```
 
-Compile directement vers les opcodes REX-SL `lbl`/`go` (`go` est traduit en saut inconditionnel via `cdn on;` puis `go`).
+Compilé directement vers les opcodes REX-SL `lbl`/`go`. Usage déconseillé dans les nouvelles structures de contrôle, mais pleinement supporté.
 
 ---
 
-## Déballage de tuple
+### 4.13 None
 
+```python
+var x = None                # déclare une variable de type 'none' (void* = NULL)
+var none x                  # forme explicite équivalente
+
+x = None                    # réaffecte x à NULL (si x est de type 'none')
+
+if x is None:               # test de nullité natif
+    ...
+
+show(x)                     # affiche "None"
+
+func f() -> none:           # fonction void
+    return None
 ```
-a, b = 1, 2;          # deux scalaires
-a, b = b, a;           # échange (les droites sont évaluées avant toute affectation)
-a, b, c = 1, 2, 3;      # N cibles = N valeurs
 
-a, b = f();             # f() retourne une list -> déballage indexé
-```
-
-- Forme scalaire : `N` expressions pour `N` cibles, chaque cible pouvant être nouvelle (déclaration inférée) ou déjà déclarée (réaffectation dynamique).
-- Forme "liste unique" : uniquement si le type d'élément de la liste retournée est connu à la compilation.
-- Limitation : les cibles doivent être de simples variables (pas d'indexation `a[i], b = ...`, pas de déballage imbriqué).
+`None`, `none` et `null` sont strictement équivalents comme mots-clés. Utilise l'opcode REX-SL natif `isnone` (0.0.23) — pas de simulation par flag booléen.
 
 ---
 
-## List comprehensions
+### 4.14 Collections
 
+#### Déclaration
+
+```python
+var l = [1, 2, 3]              # list
+var t = (1, 2, 3)              # tuple (représenté comme list en REX-SL)
+var s = {1, 2, 3}              # set (dédupliqué à la compilation)
+var d = {"a": 1, "b": 2}      # dict (clés : chaînes littérales uniquement)
 ```
-var carres = [x * x for x in range(10)]
-var pairs = [x for x in range(20) if x % 2 == 0]
+
+#### Opérations sur les listes
+
+```python
+var n = len(l)                 # longueur d'une list (opcode REX-SL len)
 ```
 
-`[expr for var in iterable [if cond]]`, compilée en `var list` + boucle + `append`. Reprend les mêmes 4 stratégies d'itération que `for` (range, littéral déroulé, variable list/tuple/set, str).
+L'itération directe sur une variable `list` au runtime n'est pas supportée (voir la section `for` — itération sur un littéral de collection).
 
-Utilisable aussi bien comme valeur directe d'un `var`/réaffectation que comme **sous-expression** ailleurs (argument de fonction, f-string, `show(...)`, ...).
+#### Affichage de collections
+
+`show(coll)` est supporté uniquement si tous les éléments de la collection sont des **littéraux** connus à la compilation. La représentation est capturée via `repr()` Python au moment de la déclaration et injectée comme chaîne figée.
 
 ---
 
-## Chaînes formatées (f-strings)
+### 4.15 Fonctions natives (builtins)
 
-```
-var nom = "Ada"
-var age = 36
-show(f"{nom} a {age} ans")     # "Ada a 36 ans"
-show(f"progrès: {{{i}}}")      # accolades doublées -> accolade littérale : "progrès: {3}"
-```
+Les fonctions suivantes sont utilisables dans n'importe quelle expression :
 
-- `f"..."` / `f'...'` fonctionne partout où une chaîne est attendue.
-- Chaque `{expr}` est évalué puis converti en texte (`number`/`float`/`str`/`bool`).
-- `{{` / `}}` produisent une accolade littérale.
+| Catégorie | Fonctions |
+|-----------|-----------|
+| Longueur | `len(x)` — str et list |
+| Type | `type(x)` |
+| Conversions | `str(x)`, `int(x)`, `float(x)`, `bool(x)` |
+| Chaînes | `upper(s)`, `lower(s)`, `trim(s)`, `reverse(s)`, `charat(s, i)`, `find(s, sub)`, `slice(s, a, b)`, `replace(s, old, new)` |
+| Math | `abs(x)`, `pow(x, y)`, `pow(x, y, mod)`, `round(x)`, `divmod(x, y)` |
+| Collections | `sum(l)`, `min(l)`, `max(l)`, `sorted(l)`, `reversed(l)`, `list(x)`, `tuple(x)`, `set(x)`, `dict(x)` |
+| Caractères | `chr(n)`, `ord(c)`, `hex(n)`, `oct(n)`, `bin(n)` |
+| Logique | `all(l)`, `any(l)` |
+| Divers | `repr(x)`, `ascii(x)`, `hash(x)`, `id(x)`, `callable(x)`, `isinstance(x, t)`, `format(x, spec)`, `input()` |
 
-### Spécificateurs de format `{expr:spec}`
-
-```
-show(f"{pi:.2f}")        # 2 décimales
-show(f"{n:5d}")           # largeur 5
-show(f"{n:05d}")          # rempli de zéros
-show(f"{n:<5d}")          # aligné à gauche
-```
-
-Formes supportées : `[<|>][0][largeur][.précision][d|f|g|e|s]` (`d` : entier ; `f`/`e`/`g` : flottant ; `s` : chaîne). L'alignement centré `^` n'est pas supporté. Compilé via `snprintf` en C (injection `scrc`).
+`print()` est un alias de `show()`.
 
 ---
 
-## Imports (`import`)
+### 4.16 Fonctions comme objets (funcref)
 
-```
-import "utils.rex";
+```python
+func carre(number x) -> number:
+    return x * x
+
+var func f = carre              # déclare un pointeur de fonction
+var r = f(5)                    # appel indirect : r = 25
+
+f = autre_func                  # réassignation du pointeur
 ```
 
-- Colle **textuellement** le contenu du fichier importé **à la place** de la ligne `import` (comme un `#include` C), avant toute analyse lexicale.
-- Chemin résolu relativement au dossier du fichier qui importe.
-- Récursif, avec détection des imports circulaires.
-- L'en-tête `# REX>` du fichier importé est retirée automatiquement.
-- L'instruction doit occuper une **ligne entière** à elle seule.
-- Disponible uniquement en **mode fichier** (`-f`/`--file`) — pas de dossier de référence en mode `-o`/`--oneline`.
+Aucune closure. La signature de la cible est vérifiée à la **déclaration** uniquement ; la réassignation n'est pas vérifiée.
 
 ---
 
-## Modules avec espace de noms (`import ... as`)
+## 5. Architecture interne
 
-```
-import "geometrie.rex" as geo;
+### 5.1 REX_Lexer
 
-show(geo.aire_cercle(5));
-```
+**Rôle :** découpe le source REX en une liste de tokens/groupes.
 
-- Les fonctions du fichier importé sont renommées `__rx_mod_<alias>_<fn>` dans le code inliné, puis enregistrées sous l'alias.
-- `alias.fn(args)` est reconnu dans les expressions **et** comme instruction autonome.
-- Les **variables globales** du module ne sont **pas** exportées (limitation documentée : espace de noms de fonctions uniquement).
+**Fonctionnement :**
 
----
+- Les parenthèses `(...)` produisent une **sous-liste Python imbriquée** (pas de token `(` ou `)`).
+- Les crochets `[...]` produisent un objet `Group(kind="[]", items=[...])`.
+- Les accolades `{...}` produisent un objet `Group(kind="{}", items=[...])` (littéraux dict/set uniquement — jamais pour délimiter des blocs).
+- L'indentation est gérée à la Python : tokens `INDENT` / `DEDENT` émis à chaque changement de niveau. 1 tabulation = 4 espaces.
+- `;` est un simple token `PUNCT` (séparateur d'instructions en mode one-liner).
 
-## Retypage dynamique des variables
+**Types de tokens produits :**
 
-Comportement "à la Python" : une variable dont le type n'a **pas** été annoté explicitement peut changer de type par réaffectation.
+| Type | Valeur |
+|------|--------|
+| `IDENT` | Identifiant utilisateur |
+| `KEYWORD` | Mot-clé REX (`if`, `var`, `func`, etc.) |
+| `NUMBER` | Entier, flottant, hexadécimal, binaire |
+| `STRING` | Chaîne littérale |
+| `FSTRING` | F-string (liste de segments) |
+| `OP` | Opérateur (`+`, `**`, `+=`, etc.) |
+| `PUNCT` | Ponctuation (`;`, `,`, `:`, `.`) |
+| `NEWLINE` | Fin de ligne logique |
+| `INDENT` | Augmentation du niveau d'indentation |
+| `DEDENT` | Diminution du niveau d'indentation |
 
-```
-var s = carre(i)     # inféré "number"
-s = {1, 2, 3}          # OK : retype "s" en set
-s = {4, 5, 6}          # OK : nouvelle réaffectation
-
-var x = 5
-x = "abc"               # OK : retype "x" en str (0.0.12)
-```
-
-Un type **explicite** (`var number s = 0`, `var list l = [...]`) reste verrouillé : toute tentative de changement de type lève une erreur de compilation.
-
-> **Note d'implémentation** : chaque retypage alloue en interne un nom REX-SL frais (`__rx_col<N>_<nom>`) pour éviter toute collision avec la déclaration précédente dans la table de symboles REX-SL (qui persiste pour toute la durée du programme généré). Les noms commençant par `__rx_` sont **réservés au compilateur** et ne peuvent pas être utilisés comme noms de variable par l'utilisateur.
-
----
-
-## Erreurs
-
-Toute erreur de résolution REX → REX-SL lève une `RexResolveError` (sous-classe de `REXERROR`), rapportée sur stderr sous la forme :
-
-```
-Erreur de resolution: <message>
-```
-
-Les erreurs du lexer sont préfixées `[Lexer]`. Les erreurs REX-SL elles-mêmes (issues de `REX-SL.py`, en aval) sont préfixées `[REX-SL]`.
+**Commentaires :** ligne (`# ...`) et bloc (`#* ... *#`).
 
 ---
 
-## Limitations connues (héritées de REX-SL)
+### 5.2 ExprParser
 
-- Pas d'indexation générique sur une variable `list`/`dict` sans type d'élément/valeur connu et homogène à la compilation.
-- Pas d'itération directe sur une variable `list` sans passer par la boucle runtime dédiée (`len`/`get`) — REX-SL n'exposant aucune primitive de longueur pour une variable liste au sens général de la 0.0.11 (résolu depuis via ces opcodes).
-- Les slices (`x[a:b]`, `x[a:b:c]`) ne sont disponibles que sur `str`.
-- `show(...)` n'affiche que `number`/`float`/`str`/`bool`, plus les collections entièrement littérales ou sérialisées via `list_str`/`dict_str`.
-- `read`/`readlines`/`write`/`writelines` : pas de mode append, pas d'objet fichier.
-- `RX_ret` est un registre global monotype (contourné automatiquement, voir [Fonctions](#fonctions)).
-- Pas de closures pour les pointeurs de fonction (`funcref`).
-- `None` est entièrement simulé côté REX.py (aucun type nullable réel côté REX-SL).
+**Rôle :** parseur récursif descendant d'expressions arithmétiques.
 
----
+**Priorité des opérateurs (de la plus faible à la plus forte) :**
 
-## Architecture interne du compilateur
+1. `+`, `-` (addition, soustraction, concaténation)
+2. `*`, `/`, `%` (multiplication, division, modulo)
+3. `**` (exponentiation, associatif à droite)
+4. Moins unaire `-x`
+5. Primaires : littéraux, identifiants, appels de fonction, groupements `(...)`, slices `[a:b]`, indexations `[i]`
 
-Pour les contributeurs souhaitant étendre le langage :
+**Nœuds AST produits :**
 
-| Composant                 | Rôle                                                                          |
-|-----------------------------|----------------------------------------------------------------------------|
-| `REX_Lexer`                 | Découpe le source en tokens (gère indentation à la Python, f-strings, groupements `()`/`[]`/`{}`) |
-| `ExprParser` / `ExprCodegen`| Analyse et génère le code des expressions (priorité des opérateurs, appels, indexation, slices, f-strings) |
-| `Emitter`                    | Accumule le code REX-SL généré + table des symboles (types, alias de retypage, fonctions, modules, funcrefs) |
-| `REX_Resolver`               | Point d'entrée : reconstruit la structure d'instructions (`_Line`/`_Block`) et délègue à chaque "statement compiler" |
-| `LINE_HANDLERS`               | Dictionnaire nom de mot-clé → fonction de compilation pour les instructions simples (`var`, `show`, `return`, ...) |
-| `BLOCK_HANDLERS`              | Idem pour les instructions à bloc (`func`, `repeat`, `while`, `for`) |
-| `REX_IfStatement`             | Compilateur dédié pour les conditions complexes (`and`/`or`/`not`, court-circuit) |
-
-Ajouter une nouvelle instruction REX ne demande qu'une nouvelle fonction/classe `compile(tokens, emitter)` (ou `compile(header, body, emitter, resolver)` pour un bloc) + une entrée dans `LINE_HANDLERS`/`BLOCK_HANDLERS`. Ajouter un nouvel opérateur revient à ajouter une entrée dans `ExprParser.PRECEDENCE`.
-
----
-
-## Historique des versions
-
-| Version | Points marquants |
-|---------|-------------------|
-| 0.0.1   | Lexer et compilateur de base |
-| 0.0.2   | Résolveur de calcul |
-| 0.0.3   | Blocs par indentation + `;` à la Python |
-| 0.0.4   | `var` + résolveur d'expressions complet |
-| 0.0.5   | Blocs à la Python (`:` + indentation), `func`/`return`, `go`/`label`, `repeat ... times` |
-| 0.0.6   | Header simplifié `# REX>`, `repeat` sans `times`, littéraux de collection Python, `if`/`elif`/`else` (comparaison simple) |
-| 0.0.7   | Conditions complexes `and`/`or`/`not` avec court-circuit, parenthèses de groupement |
-| 0.0.8   | Retypage de variable par réaffectation de collection (types inférés uniquement) |
-| 0.0.9   | Fix retypage : noms REX-SL internes frais (`__rx_col<N>_<nom>`) pour éviter les collisions |
-| 0.0.10  | Fix opérateurs `!=`/`<=`/`>=` dans les conditions complexes, fix `and`/`or`/`not`, ajout de `show(...)` |
-| 0.0.11  | `while`, `for range(...)`, `break`/`continue`, f-strings, lecture/écriture fichier, `import` |
-| 0.0.12  | `for` étendu (str, collections littérales, `enumerate`), fonctions natives, retypage scalaire dynamique |
-| 0.0.13  | Slice `x[a:b]`, fix affichage de collections littérales |
-| 0.0.14  | `+=`/`-=`/`*=`/`/=`/`%=`, `**`, `len()` étendu, retour de collection, slice avec pas, déballage de tuple, list comprehensions, f-strings avec format specs |
-| 0.0.15  | Modules réels (`import ... as`), `func` comme objet (pointeurs de fonction) |
-| 0.1.0   | `None`/`none`/`null`, `is`/`is not`, `in`/`not in` dans les conditions |
+| Nœud | Signification |
+|------|---------------|
+| `("lit", valeur)` | Littéral |
+| `("ident", nom)` | Identifiant |
+| `("binop", opcode, gauche, droite)` | Opération binaire |
+| `("neg", nœud)` | Moins unaire |
+| `("call", nom, args)` | Appel de fonction |
+| `("modcall", alias, fn, args)` | Appel qualifié de module |
+| `("fstring", segments)` | F-string |
+| `("slice", expr, début, fin)` | Slice |
+| `("slicestep", expr, début, fin, pas)` | Slice avec pas |
+| `("index", expr, clé)` | Indexation |
+| `("none",)` | Valeur None |
+| `("listcomp", ...)` | List comprehension |
 
 ---
 
-*Documentation générée à partir des commentaires et de la structure du code source de `REX.py`.*
+### 5.3 ExprCodegen
+
+**Rôle :** génère le code REX-SL correspondant à un nœud AST d'expression. Alloue des variables temporaires pour stocker les résultats intermédiaires.
+
+**Responsabilités principales :**
+
+- Résolution de type des sous-expressions.
+- Promotion automatique `number → float`.
+- Génération des f-strings (conversion en `str` + concaténation).
+- Appel des builtins natifs (`BUILTIN_ARITY` + `_call_builtin`).
+- Gestion des conversions de type via l'opcode REX-SL `change`.
+- Génération des slices (`slice`, `slicestep`), indexations (`get`), et appels de module.
+
+---
+
+### 5.4 Emitter
+
+**Rôle :** état global de l'émission REX-SL. Centralise toutes les informations de compilation et fournit les méthodes d'émission d'opcodes.
+
+**État maintenu :**
+
+| Attribut | Description |
+|----------|-------------|
+| `lines` | Liste des lignes REX-SL générées |
+| `types` | `{nom_var: type_rexsl}` |
+| `functions` | `{nom_fn: (param_types, param_names, defaults, return_type, ...)}` |
+| `modules` | `{alias: set_de_fonctions_exportées}` |
+| `funcrefs` | `{nom_var: (mangled_name, ...)}` |
+| `_explicit_types` | Ensemble des variables dont le type est annoté explicitement |
+| `_loop_stack` | Pile de labels `(label_break, label_continue)` pour `break`/`continue` |
+| `_temp_counter` | Compteur de variables temporaires `__rx_tmp<N>` |
+
+**Méthodes clés :**
+
+- `emit(ligne)` — ajoute une ligne REX-SL.
+- `declare_literal(nom, type, explicit)` — émet `var <type> <nom>;`.
+- `reassign(nom, type, valeur)` — émet `<nom> <valeur>;`.
+- `assign_dynamic(nom, type, valeur)` — réaffectation avec gestion du retypage.
+- `retype_as_collection(nom, type)` — émet `retype <nom> <type>;`.
+- `push_loop_labels(brk, cont)` / `pop_loop_labels()` — gestion de la pile de boucles.
+- `render()` — retourne le code REX-SL complet avec l'en-tête.
+
+---
+
+### 5.5 Instructions (statements)
+
+Chaque construction REX est gérée par une classe dédiée :
+
+| Classe | Instruction(s) REX |
+|--------|--------------------|
+| `REX_VarStatement` | `var x = ...` |
+| `REX_AssignStatement` | `x = ...`, `x += ...`, etc. |
+| `REX_UnpackStatement` | `a, b = e1, e2` |
+| `REX_ShowStatement` | `show(...)` |
+| `REX_IfStatement` | `if/elif/else` |
+| `REX_WhileStatement` | `while` |
+| `REX_ForStatement` | `for ... in range(...)` / `for ... in str` / `for ... in [...]` |
+| `REX_RepeatStatement` | `repeat N` |
+| `REX_FuncStatement` | `func nom(...):` |
+| `REX_ReturnStatement` | `return expr` |
+| `REX_ImportStatement` | `import "..."` |
+| `REX_GoStatement` | `go label;` |
+| `REX_LabelStatement` | `label nom;` |
+| `REX_WriteStatement` | `write(...)`, `writelines(...)` |
+| `REX_ListComprehension` | `[expr for x in ...]` |
+| `REX_NoneSupport` | Gestion de `None`/`none`/`null` |
+| `REX_CollectionLiteral` | Littéraux `[...]`, `(...)`, `{...}`, `{"k": v}` |
+
+#### Compilation des conditions (`REX_IfStatement`)
+
+Les conditions `if`/`elif`/`else` avec `and`/`or`/`not` sont compilées selon la technique standard du **jumping code** à deux destinations `true_lbl`/`false_lbl`. L'une des deux peut valoir le sentinel `FALL` (None) pour autoriser un fallthrough explicite. Cela garantit un court-circuit logique correct pour toutes les combinaisons d'opérateurs booléens.
+
+---
+
+### 5.6 Préprocesseur d'imports
+
+`preprocess_imports(source, base_dir)` est appelé avant toute analyse lexicale. Il effectue une résolution récursive des directives `import` :
+
+1. Recherche les lignes correspondant aux patterns `IMPORT_LINE_RE`, `IMPORT_LINE_AS_RE` ou `IMPORT_BARE_RE`.
+2. Lit le fichier cible, vérifie son en-tête `# REX>`, retire cette en-tête.
+3. Si la forme `as alias` est utilisée, renomme toutes les fonctions du module en `__rx_mod_<alias>_<fn>` et enregistre les exports dans `Emitter.modules`.
+4. Colle le contenu à la place de la ligne `import`.
+5. Détecte les imports circulaires via un ensemble `seen` d'en cours de traitement.
+
+---
+
+## 6. Gestion des erreurs
+
+| Classe | Déclenchement |
+|--------|---------------|
+| `REXERROR` | Classe de base pour toutes les erreurs REX |
+| `RexResolveError` (sous-classe) | Erreurs de résolution REX → REX-SL |
+
+Les erreurs sont rapportées avec un préfixe indiquant l'étape :
+
+```
+Erreur lexicale: [Lexer] indentation incohérente (ligne 5, colonne 1)
+Erreur de résolution: variable non déclarée : x
+```
+
+Les erreurs issues de l'étape REX-SL (exécutable externe) sont préfixées `[REX-SL]`.
+
+---
+
+## 7. Limitations connues
+
+Ces limitations sont inhérentes à REX-SL 0.0.23 et ne peuvent pas être contournées côté REX :
+
+- Pas d'itération runtime sur une variable `list` (pas de primitive de longueur de liste).
+- `len()` sur `str` uniquement (pas de `len` sur une variable `list` variable — seulement sur des littéraux).
+- Pas d'affichage de collection contenant des éléments non-littéraux (calculés).
+- Le pas (`step`) d'un `for ... in range(...)` doit être un entier **littéral** connu à la compilation.
+- Les collections ne peuvent pas être passées en paramètre de fonction directement.
+- Pas de mode append pour les fichiers (écriture complète uniquement).
+- Pas de fermeture explicite de fichier (lecture/écriture en un seul appel).
+- Pas de closures pour les fonctions comme objets (`funcref`).
+- Les slices `x[a:b]` et `x[a:b:c]` ne fonctionnent que sur `str`.
+- `x[i]` sans `:` n'est pas une indexation générique directe sur `str` : utiliser `charat(s, i)`.
+- Les clés d'un `dict` littéral doivent être des chaînes littérales.
+- Import disponible uniquement en mode `-f`/`--file` (pas en mode `-o`/`--oneline`).
+- Les variables globales d'un module importé avec `as` ne sont pas exportées.
+
+---
+
+## 8. Historique des versions
+
+| Version | Principales nouveautés |
+|---------|------------------------|
+| 0.0.1 | Lexer et compilateur de base |
+| 0.0.2 | Résolveur de calculs |
+| 0.0.3 | Blocs par indentation (Python-style) + `;` |
+| 0.0.4 | Base modulable REX-SL, instruction `var`, résolveur d'expressions complet |
+| 0.0.5 | Blocs à la Python, fonctions `func`/`return`, `go`/`label`, boucle `repeat` |
+| 0.0.6 | En-tête simplifié, `repeat` sans `times`, littéraux de collection, `if`/`elif`/`else` |
+| 0.0.7 | Conditions complexes `and`/`or`/`not` avec court-circuit |
+| 0.0.8 | Retypage de variable par réaffectation |
+| 0.0.9 | Fix retypage vers collection (alias interne `__rx_col`) |
+| 0.0.10 | Fix conditions complexes, instruction `show()` avec `end=` |
+| 0.0.11 | Boucles `while`/`for`, `break`/`continue`, f-strings, gestion de fichiers, `import` |
+| 0.0.12 | `for` étendu (str, littéraux, `enumerate`), fonctions natives (builtins), retypage scalaire automatique |
+| 0.0.13 | Slice Python `x[a:b]`, fix `show` de collections littérales |
+| 0.0.14 | `+=`/`-=`/etc., `**`, `len` sur collections, retour de collection depuis fonction, `x[a:b:c]`, déballage de tuple, list comprehensions, f-strings avec format specs |
+| 0.0.15 | Modules avec espaces de noms (`import ... as alias`), fonctions comme objets (`funcref`) |
+| 0.0.16 | Refactoring interne pour REX-SL 0.0.23 (opcode `retype` natif) |
+| alpha 0.1.1 | Ajout de tous les builtins Python dans le compilateur |
+| alpha 0.1.3 | Gestion native de `None` via le type REX-SL `none` (remplace la simulation par flag bool) |
