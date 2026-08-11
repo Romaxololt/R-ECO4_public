@@ -1,6 +1,6 @@
 # Documentation du compilateur REX
 
-> Version alpha 0.1.3 — copyright © 2026 R-ECO4  
+> Version alpha 0.1.8 — copyright © 2026 R-ECO4  
 > Cible REX-SL : 0.0.23
 
 ---
@@ -27,6 +27,12 @@
    - 4.14 [Collections](#414-collections)
    - 4.15 [Fonctions natives (builtins)](#415-fonctions-natives-builtins)
    - 4.16 [Fonctions comme objets (funcref)](#416-fonctions-comme-objets-funcref)
+   - 4.17 [Opérateur ternaire](#417-opérateur-ternaire)
+   - 4.18 [Opérateurs binaires bit à bit](#418-opérateurs-binaires-bit-à-bit)
+   - 4.19 [Assertion (`assert`)](#419-assertion-assert)
+   - 4.20 [Filtrage par valeur (`match` / `case` / `default`)](#420-filtrage-par-valeur-match--case--default)
+   - 4.21 [Gestion d'exceptions (`try` / `except` / `finally` / `raise`)](#421-gestion-dexceptions-try--except--finally--raise)
+   - 4.22 [Classes (`class`)](#422-classes-class)
 5. [Architecture interne](#5-architecture-interne)
    - 5.1 [REX_Lexer](#51-rex_lexer)
    - 5.2 [ExprParser](#52-exprparser)
@@ -34,7 +40,7 @@
    - 5.4 [Emitter](#54-emitter)
    - 5.5 [Instructions (statements)](#55-instructions-statements)
    - 5.6 [Préprocesseur d'imports](#56-préprocesseur-dimports)
-6. [Gestion des erreurs](#6-gestion-des-erreurs)
+6. [Gestion des erreurs et avertissements](#6-gestion-des-erreurs-et-avertissements)
 7. [Limitations connues](#7-limitations-connues)
 8. [Historique des versions](#8-historique-des-versions)
 
@@ -199,6 +205,7 @@ a, b = b, a                # swap (sémantique Python : droites évaluées avant
 | `**` | Exponentiation (priorité maximale, associatif à droite) |
 | `()` | Groupement / priorité |
 | `-x` | Moins unaire |
+| `& \| ^ ~ << >>` | Opérateurs bit à bit (sur `number` uniquement — voir §4.18) |
 | `str + str` | Concaténation |
 | `str - str` | Suppression d'occurrences |
 | `str * number` | Répétition |
@@ -206,6 +213,7 @@ a, b = b, a                # swap (sémantique Python : droites évaluées avant
 | `x[a:b:c]` | Slice avec pas sur `str` |
 | `x[i]` | Indexation via `charat(x, i)` ou `get` |
 | `alias.fn(args)` | Appel qualifié de module |
+| `val_vrai if cond else val_faux` | Expression ternaire (voir §4.17) |
 
 ---
 
@@ -362,18 +370,21 @@ Disponible uniquement en mode `-f`/`--file` (pas en mode `-o`).
 import "math.rex" as math;
 
 var r = math.carre(5)       # appel qualifié
+var v = math.ma_var         # accès à une variable globale exportée du module
 ```
 
-Les fonctions du fichier importé sont renommées `__rx_mod_<alias>_<fn>` dans le code inline. Seules les fonctions sont exportées (pas les variables globales du module).
+Les fonctions **et les variables globales** du fichier importé sont renommées `__rx_mod_<alias>_<nom>` dans le code inline et enregistrées dans `Emitter.modules[alias]`. L'accès qualifié `alias.nom` fonctionne aussi bien pour les fonctions que pour les variables.
 
-#### Import sans guillemets (à la Python)
+#### Import sans guillemets — evo-import
 
 ```python
 import module
 import module as alias
 ```
 
-Cherche `module.rex` ou l'exécutable `module` dans le chemin courant.
+Cherche `module.rex` ou l'exécutable `module` dans le chemin courant. Lorsque la cible est un exécutable, les variables globales qu'il exporte (champ `"variables"` de sa métadonnée JSON) sont accessibles via `alias.var_name` — l'exécutable doit traiter la commande `metavar <nom> <chemin>` en écrivant la valeur dans `<chemin>`.
+
+> **Note :** les retours de type `list`/`dict`/`tuple`/`set` depuis un evo-import sont explicitement rejetés avec un message d'orientation. Les arguments chaînes contenant des espaces sont transmis via `fork`/`execv`.
 
 ---
 
@@ -432,9 +443,9 @@ Compilé directement vers les opcodes REX-SL `lbl`/`go`. Usage déconseillé dan
 var x = None                # déclare une variable de type 'none' (void* = NULL)
 var none x                  # forme explicite équivalente
 
-x = None                    # réaffecte x à NULL (si x est de type 'none')
+x = None                    # remet x à NULL
 
-if x is None:               # test de nullité natif
+if x is None:               # test de nullité natif (opcode isnone)
     ...
 
 show(x)                     # affiche "None"
@@ -443,7 +454,7 @@ func f() -> none:           # fonction void
     return None
 ```
 
-`None`, `none` et `null` sont strictement équivalents comme mots-clés. Utilise l'opcode REX-SL natif `isnone` (0.0.23) — pas de simulation par flag booléen.
+`None`, `none` et `null` sont strictement équivalents comme mots-clés. Utilise l'opcode REX-SL natif `isnone` — pas de simulation par flag booléen.
 
 ---
 
@@ -508,6 +519,146 @@ Aucune closure. La signature de la cible est vérifiée à la **déclaration** u
 
 ---
 
+### 4.17 Opérateur ternaire
+
+```python
+var abs_x = x if x >= 0 else -x
+var msg = "pair" if n % 2 == 0 else "impair"
+```
+
+Syntaxe : `valeur_si_vrai if condition else valeur_si_faux`. Les deux branches doivent être du même type scalaire (`number`, `float`, `str`, `bool`), avec promotion `number → float` admise. L'opérateur a la priorité la plus basse de toutes les expressions.
+
+---
+
+### 4.18 Opérateurs binaires bit à bit
+
+```python
+var masque = a & 0xFF           # ET bit à bit
+var flags  = a | b              # OU bit à bit
+var diff   = a ^ b              # XOR bit à bit
+var inv    = ~a                 # NOT bit à bit (unaire)
+var dec    = a >> 2             # décalage à droite
+var aug    = a << 3             # décalage à gauche
+```
+
+Disponibles uniquement sur le type `number`. Les opérations sont effectuées en C sur des entiers non signés, le résultat est recasté en `int`.
+
+Priorité (de la plus faible à la plus forte) : `|` → `^` → `&` → `<<` / `>>`.
+
+---
+
+### 4.19 Assertion (`assert`)
+
+```python
+assert x > 0
+assert x > 0, "x doit être positif"
+```
+
+Si la condition est fausse, le message (ou un message générique) est affiché sur `stderr` et le programme se termine avec `exit(1)`. Les conditions complexes (`and`/`or`/`not`) sont supportées.
+
+---
+
+### 4.20 Filtrage par valeur (`match` / `case` / `default`)
+
+```python
+match jour:
+    case 1:
+        show("lundi")
+    case 2:
+        show("mardi")
+    default:
+        show("autre jour")
+```
+
+L'expression du `match` est évaluée **une seule fois** dans un temporaire. `default` joue le rôle de `else`. Pas de fallthrough entre les cas. Compilé en chaîne de comparaisons `cdn`/`go`/`lbl`, à la manière d'un `if`/`elif`/`else`.
+
+---
+
+### 4.21 Gestion d'exceptions (`try` / `except` / `finally` / `raise`)
+
+```python
+try:
+    var r = risque()
+except as e:
+    show(f"Erreur : {e}")
+finally:
+    show("nettoyage")
+```
+
+```python
+raise "valeur invalide"
+raise f"erreur sur {nom}"
+```
+
+Compilé via injection C brute (`setjmp`/`longjmp`) sans modification de REX-SL. La clause `except as e` expose le message d'exception dans la variable `e` (type `str`), déclarée automatiquement si absente. La clause `finally` s'exécute toujours (après le corps `try` normal ou après `except`).
+
+`raise` accepte n'importe quel type — la valeur est convertie en `str` avant d'être propagée. Sans gestionnaire englobant, `raise` affiche le message sur `stderr` et termine le programme.
+
+#### Limitations
+
+- Pas de filtrage par type d'exception (`except ValueError:` non supporté).
+- Pas de `raise` nu (rethrow sans message).
+- Pas de `except (A, B):` multi-types.
+- Un `return` au premier niveau d'un corps `try` lève une erreur de compilation (il bypasse le `finally` — limitation `setjmp`/`longjmp`).
+- Imbrication limitée à 64 niveaux.
+
+---
+
+### 4.22 Classes (`class`)
+
+```python
+class Compteur:
+    def __init__(self, number start):
+        self.val = start
+
+    def incrementer(self):
+        self.val = self.val + 1
+
+    def get(self) -> number:
+        return self.val
+
+var c = Compteur(0)
+c.incrementer()
+show(c.get())
+```
+
+#### Héritage simple
+
+```python
+class Enfant(Compteur):
+    def double(self):
+        self.val = self.val * 2
+```
+
+L'héritage copie la struct du parent et initialise les champs hérités via le constructeur parent lorsque les types de paramètres du constructeur courant coïncident (en préfixe) avec ceux du parent.
+
+#### Stratégie de compilation
+
+Les classes sont compilées entièrement via injection C brute (`gscrc`) sans modification de REX-SL :
+
+- Un `typedef struct __rx_cls_Nom` est généré avec un champ par attribut `self.x` déclaré dans `__init__`.
+- Un constructeur C `__rx_new_Nom(...)` est généré.
+- Chaque méthode produit une fonction C `__rx_mth_Nom_methode(self, ...)`.
+- Ces définitions sont placées en portée **globale** C (`gscrc`), donc visibles depuis les fonctions `func` et depuis le flux principal.
+
+#### Utilisation dans les méthodes
+
+Les structures de contrôle `if`/`elif`/`else`, `while` et `for range` sont supportées dans les corps de méthodes (depuis alpha 0.1.8). `show()` est également supporté dans les méthodes.
+
+> **Note :** `break`/`continue` et `for var in list` restent non supportés dans les méthodes (limitation du chemin C brut).
+
+#### Limitations
+
+- Pas d'héritage multiple.
+- Pas de `super()`.
+- Pas de méthodes de classe (`@classmethod`) ni statiques.
+- Les attributs doivent être déclarés dans `__init__` via `self.attr = expr`.
+- Types d'attributs supportés : `number`, `float`, `bool`, `str`.
+- Les méthodes ne peuvent pas retourner de collections (`list`/`dict`) via le registre `RX_ret`.
+- `self` doit être le premier paramètre de chaque méthode.
+
+---
+
 ## 5. Architecture interne
 
 ### 5.1 REX_Lexer
@@ -527,11 +678,11 @@ Aucune closure. La signature de la cible est vérifiée à la **déclaration** u
 | Type | Valeur |
 |------|--------|
 | `IDENT` | Identifiant utilisateur |
-| `KEYWORD` | Mot-clé REX (`if`, `var`, `func`, etc.) |
+| `KEYWORD` | Mot-clé REX (`if`, `var`, `func`, `class`, `match`, `try`, `assert`, etc.) |
 | `NUMBER` | Entier, flottant, hexadécimal, binaire |
 | `STRING` | Chaîne littérale |
 | `FSTRING` | F-string (liste de segments) |
-| `OP` | Opérateur (`+`, `**`, `+=`, etc.) |
+| `OP` | Opérateur (`+`, `**`, `+=`, `&`, `|`, `^`, `~`, `<<`, `>>`, etc.) |
 | `PUNCT` | Ponctuation (`;`, `,`, `:`, `.`) |
 | `NEWLINE` | Fin de ligne logique |
 | `INDENT` | Augmentation du niveau d'indentation |
@@ -547,11 +698,16 @@ Aucune closure. La signature de la cible est vérifiée à la **déclaration** u
 
 **Priorité des opérateurs (de la plus faible à la plus forte) :**
 
-1. `+`, `-` (addition, soustraction, concaténation)
-2. `*`, `/`, `%` (multiplication, division, modulo)
-3. `**` (exponentiation, associatif à droite)
-4. Moins unaire `-x`
-5. Primaires : littéraux, identifiants, appels de fonction, groupements `(...)`, slices `[a:b]`, indexations `[i]`
+1. `val if cond else val` (opérateur ternaire)
+2. `|` (OU bit à bit)
+3. `^` (XOR bit à bit)
+4. `&` (ET bit à bit)
+5. `<<`, `>>` (décalages)
+6. `+`, `-` (addition, soustraction, concaténation)
+7. `*`, `/`, `%` (multiplication, division, modulo)
+8. `**` (exponentiation, associatif à droite)
+9. Moins unaire `-x`, NOT bit à bit `~x`
+10. Primaires : littéraux, identifiants, appels de fonction, groupements `(...)`, slices `[a:b]`, indexations `[i]`
 
 **Nœuds AST produits :**
 
@@ -561,6 +717,7 @@ Aucune closure. La signature de la cible est vérifiée à la **déclaration** u
 | `("ident", nom)` | Identifiant |
 | `("binop", opcode, gauche, droite)` | Opération binaire |
 | `("neg", nœud)` | Moins unaire |
+| `("bitnot", nœud)` | NOT bit à bit `~` |
 | `("call", nom, args)` | Appel de fonction |
 | `("modcall", alias, fn, args)` | Appel qualifié de module |
 | `("fstring", segments)` | F-string |
@@ -569,6 +726,7 @@ Aucune closure. La signature de la cible est vérifiée à la **déclaration** u
 | `("index", expr, clé)` | Indexation |
 | `("none",)` | Valeur None |
 | `("listcomp", ...)` | List comprehension |
+| `("ternary", cond, vrai, faux)` | Expression ternaire |
 
 ---
 
@@ -584,6 +742,7 @@ Aucune closure. La signature de la cible est vérifiée à la **déclaration** u
 - Appel des builtins natifs (`BUILTIN_ARITY` + `_call_builtin`).
 - Gestion des conversions de type via l'opcode REX-SL `change`.
 - Génération des slices (`slice`, `slicestep`), indexations (`get`), et appels de module.
+- Génération des opérateurs bit à bit et de l'opérateur ternaire via injection C brute (`scrc`).
 
 ---
 
@@ -598,11 +757,13 @@ Aucune closure. La signature de la cible est vérifiée à la **déclaration** u
 | `lines` | Liste des lignes REX-SL générées |
 | `types` | `{nom_var: type_rexsl}` |
 | `functions` | `{nom_fn: (param_types, param_names, defaults, return_type, ...)}` |
-| `modules` | `{alias: set_de_fonctions_exportées}` |
+| `modules` | `{alias: set_de_fonctions_et_variables_exportées}` |
 | `funcrefs` | `{nom_var: (mangled_name, ...)}` |
 | `_explicit_types` | Ensemble des variables dont le type est annoté explicitement |
 | `_loop_stack` | Pile de labels `(label_break, label_continue)` pour `break`/`continue` |
 | `_temp_counter` | Compteur de variables temporaires `__rx_tmp<N>` |
+| `try_runtime_emitted` | Drapeau : infrastructure `setjmp`/`longjmp` déjà émise |
+| `warnings` | Liste des avertissements non bloquants collectés pendant la compilation |
 
 **Méthodes clés :**
 
@@ -639,6 +800,11 @@ Chaque construction REX est gérée par une classe dédiée :
 | `REX_ListComprehension` | `[expr for x in ...]` |
 | `REX_NoneSupport` | Gestion de `None`/`none`/`null` |
 | `REX_CollectionLiteral` | Littéraux `[...]`, `(...)`, `{...}`, `{"k": v}` |
+| `REX_AssertStatement` | `assert expr[, "message"]` |
+| `REX_MatchStatement` | `match expr: / case val: / default:` |
+| `REX_TryStatement` | `try: / except [as e]: / finally:` |
+| `REX_RaiseStatement` | `raise expr` |
+| `REX_ClassStatement` | `class Nom[(Parent)]: / def methode(self, ...):` |
 
 #### Compilation des conditions (`REX_IfStatement`)
 
@@ -652,24 +818,35 @@ Les conditions `if`/`elif`/`else` avec `and`/`or`/`not` sont compilées selon la
 
 1. Recherche les lignes correspondant aux patterns `IMPORT_LINE_RE`, `IMPORT_LINE_AS_RE` ou `IMPORT_BARE_RE`.
 2. Lit le fichier cible, vérifie son en-tête `# REX>`, retire cette en-tête.
-3. Si la forme `as alias` est utilisée, renomme toutes les fonctions du module en `__rx_mod_<alias>_<fn>` et enregistre les exports dans `Emitter.modules`.
-4. Colle le contenu à la place de la ligne `import`.
-5. Détecte les imports circulaires via un ensemble `seen` d'en cours de traitement.
+3. Si la forme `as alias` est utilisée, renomme toutes les fonctions **et variables globales** du module en `__rx_mod_<alias>_<nom>` et enregistre les exports dans `Emitter.modules`.
+4. Pour un evo-import (sans guillemets), génère un getter zero-argument par variable exportée via `_emit_evo_var_accessor()` si l'exécutable expose un champ `"variables"` dans sa métadonnée JSON.
+5. Colle le contenu à la place de la ligne `import`.
+6. Détecte les imports circulaires via un ensemble `seen` d'en cours de traitement.
 
 ---
 
-## 6. Gestion des erreurs
+## 6. Gestion des erreurs et avertissements
 
 | Classe | Déclenchement |
 |--------|---------------|
 | `REXERROR` | Classe de base pour toutes les erreurs REX |
 | `RexResolveError` (sous-classe) | Erreurs de résolution REX → REX-SL |
 
-Les erreurs sont rapportées avec un préfixe indiquant l'étape :
+Les erreurs sont rapportées avec un préfixe indiquant l'étape, chaque ligne du message étant indentée pour rester lisible sur les messages multi-lignes :
 
 ```
-Erreur lexicale: [Lexer] indentation incohérente (ligne 5, colonne 1)
-Erreur de résolution: variable non déclarée : x
+[REX] erreur de résolution :
+  variable non déclarée : x
+  > var r = x + 1
+  conseil : déclarez x avec 'var x = ...' avant cette ligne
+```
+
+En plus des erreurs bloquantes, le compilateur collecte des **avertissements non bloquants** (retypages automatiques, promotions implicites, paramètres non annotés, etc.) qui sont affichés groupés après la compilation :
+
+```
+[REX] 2 avertissement(s) :
+  [1] retypage automatique : s (number → str)
+  [2] promotion implicite : number → float dans l'expression
 ```
 
 Les erreurs issues de l'étape REX-SL (exécutable externe) sont préfixées `[REX-SL]`.
@@ -678,10 +855,10 @@ Les erreurs issues de l'étape REX-SL (exécutable externe) sont préfixées `[R
 
 ## 7. Limitations connues
 
-Ces limitations sont inhérentes à REX-SL 0.0.23 et ne peuvent pas être contournées côté REX :
+Ces limitations sont inhérentes à REX-SL 0.0.23 ou à l'état actuel du compilateur :
 
 - Pas d'itération runtime sur une variable `list` (pas de primitive de longueur de liste).
-- `len()` sur `str` uniquement (pas de `len` sur une variable `list` variable — seulement sur des littéraux).
+- `len()` sur `str` uniquement pour les variables (pas de `len` sur une variable `list` variable — seulement sur des littéraux).
 - Pas d'affichage de collection contenant des éléments non-littéraux (calculés).
 - Le pas (`step`) d'un `for ... in range(...)` doit être un entier **littéral** connu à la compilation.
 - Les collections ne peuvent pas être passées en paramètre de fonction directement.
@@ -692,7 +869,9 @@ Ces limitations sont inhérentes à REX-SL 0.0.23 et ne peuvent pas être contou
 - `x[i]` sans `:` n'est pas une indexation générique directe sur `str` : utiliser `charat(s, i)`.
 - Les clés d'un `dict` littéral doivent être des chaînes littérales.
 - Import disponible uniquement en mode `-f`/`--file` (pas en mode `-o`/`--oneline`).
-- Les variables globales d'un module importé avec `as` ne sont pas exportées.
+- Les variables globales d'un module importé **sans** `as` ne sont pas exportées.
+- Exceptions : pas de filtrage par type, pas de `raise` nu, pas de `except (A, B):` multi-types, `return` dans un `try` lève une erreur de compilation.
+- Classes : pas d'héritage multiple, pas de `super()`, pas de méthodes statiques/de classe, attributs de types scalaires uniquement, `break`/`continue` et itération sur `list` non supportés dans les méthodes.
 
 ---
 
@@ -708,7 +887,7 @@ Ces limitations sont inhérentes à REX-SL 0.0.23 et ne peuvent pas être contou
 | 0.0.6 | En-tête simplifié, `repeat` sans `times`, littéraux de collection, `if`/`elif`/`else` |
 | 0.0.7 | Conditions complexes `and`/`or`/`not` avec court-circuit |
 | 0.0.8 | Retypage de variable par réaffectation |
-| 0.0.9 | Fix retypage vers collection (alias interne `__rx_col`) |
+| 0.0.9 | Fix retypage vers collection |
 | 0.0.10 | Fix conditions complexes, instruction `show()` avec `end=` |
 | 0.0.11 | Boucles `while`/`for`, `break`/`continue`, f-strings, gestion de fichiers, `import` |
 | 0.0.12 | `for` étendu (str, littéraux, `enumerate`), fonctions natives (builtins), retypage scalaire automatique |
@@ -717,4 +896,10 @@ Ces limitations sont inhérentes à REX-SL 0.0.23 et ne peuvent pas être contou
 | 0.0.15 | Modules avec espaces de noms (`import ... as alias`), fonctions comme objets (`funcref`) |
 | 0.0.16 | Refactoring interne pour REX-SL 0.0.23 (opcode `retype` natif) |
 | alpha 0.1.1 | Ajout de tous les builtins Python dans le compilateur |
-| alpha 0.1.3 | Gestion native de `None` via le type REX-SL `none` (remplace la simulation par flag bool) |
+| alpha 0.1.3 | Gestion native de `None` via le type REX-SL `none` |
+| alpha 0.1.4 | Opérateur ternaire, `assert`, `match`/`case`/`default`, opérateurs bit à bit `& \| ^ ~ << >>` |
+| alpha 0.1.5 | Gestion d'exceptions `try`/`except`/`finally`/`raise` via `setjmp`/`longjmp` |
+| alpha 0.1.6 | Classes style Python (`class`, héritage simple, méthodes `def`, `self`) |
+| alpha 0.1.7 | Classes utilisables dans les `func` (via `gscrc`), accès aux attributs d'instance depuis le flux principal et les fonctions, messages d'erreur enrichis (ligne, extrait source, conseil), avertissements non bloquants |
+| alpha 0.1.8 | Fix `return` dans `try` (erreur explicite), `if`/`while`/`for` et `show()` dans les méthodes de classe, fix héritage (init des champs parents) |
+| alpha 0.1.9 | Export des variables globales de modules (`import as`), variables exportées par evo-import via getter JSON |
